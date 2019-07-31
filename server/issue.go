@@ -18,7 +18,7 @@ func (s *Server) handleIssueEvent(event *PullRequestEvent) {
 	parts := strings.Split(*event.Issue.HTMLURL, "/")
 
 	mlog.Info("handle issue event", mlog.String("repoUrl", *event.Issue.HTMLURL), mlog.String("Action", event.Action), mlog.Int("PRNumber", event.PRNumber))
-	issue, err := GetIssueFromGithub(parts[len(parts)-4], parts[len(parts)-3], event.Issue)
+	issue, err := s.GetIssueFromGithub(parts[len(parts)-4], parts[len(parts)-3], event.Issue)
 	if err != nil {
 		mlog.Error("Error getting the issue from Github", mlog.Err(err))
 		return
@@ -59,7 +59,7 @@ func (s *Server) checkIssueForChanges(issue *model.Issue) {
 
 		if !hadLabel {
 			mlog.Info("issue added label", mlog.Int("issue", issue.Number), mlog.String("label", label))
-			handleIssueLabeled(issue, label)
+			s.handleIssueLabeled(issue, label)
 			hasChanges = true
 		}
 	}
@@ -74,8 +74,8 @@ func (s *Server) checkIssueForChanges(issue *model.Issue) {
 	}
 }
 
-func handleIssueLabeled(issue *model.Issue, addedLabel string) {
-	client := NewGithubClient()
+func (s *Server) handleIssueLabeled(issue *model.Issue, addedLabel string) {
+	client := NewGithubClient(s.Config.GithubAccessToken)
 
 	// Must be sure the comment is created before we let anouther request test
 	commentLock.Lock()
@@ -87,11 +87,11 @@ func handleIssueLabeled(issue *model.Issue, addedLabel string) {
 		return
 	}
 
-	for _, label := range Config.IssueLabels {
+	for _, label := range s.Config.IssueLabels {
 		finalMessage := strings.Replace(label.Message, "USERNAME", issue.Username, -1)
-		if label.Label == addedLabel && !messageByUserContains(comments, Config.Username, finalMessage) {
+		if label.Label == addedLabel && !messageByUserContains(comments, s.Config.Username, finalMessage) {
 			mlog.Info("Posted message for label on PR", mlog.String("label", label.Label), mlog.Int("issue", issue.Number))
-			commentOnIssue(issue.RepoOwner, issue.RepoName, issue.Number, finalMessage)
+			s.commentOnIssue(issue.RepoOwner, issue.RepoName, issue.Number, finalMessage)
 		}
 	}
 }
@@ -109,14 +109,14 @@ func (s *Server) CleanOutdatedIssues() {
 
 	mlog.Info("Will process the Issues", mlog.Int("Issues Count", len(issues)))
 
-	client := NewGithubClient()
+	client := NewGithubClient(s.Config.GithubAccessToken)
 	for _, issue := range issues {
 		ghIssue, _, errIssue := client.Issues.Get(context.Background(), issue.RepoOwner, issue.RepoName, issue.Number)
 		if errIssue != nil {
 			mlog.Error("Error getting Pull Request", mlog.String("RepoOwner", issue.RepoOwner), mlog.String("RepoName", issue.RepoName), mlog.Int("PRNumber", issue.Number), mlog.Err(errIssue))
 			if _, ok := errIssue.(*github.RateLimitError); ok {
 				mlog.Error("GitHub rate limit reached")
-				CheckLimitRateAndSleep()
+				s.CheckLimitRateAndSleep()
 			}
 		}
 

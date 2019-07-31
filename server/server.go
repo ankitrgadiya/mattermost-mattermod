@@ -24,9 +24,11 @@ import (
 	"github.com/mattermost/mattermost-mattermod/store"
 	"github.com/mattermost/mattermost-server/mlog"
 	"github.com/mattermost/mattermost-server/utils/fileutils"
+	"github.com/pkg/errors"
 )
 
 type Server struct {
+	Config *PRServerConfig
 	Store  store.Store
 	Router *mux.Router
 
@@ -49,21 +51,24 @@ var (
 	SPINMINT_LINK       = "SPINMINT_LINK"
 )
 
-func init() {
-	SetupLogging()
-}
+// New returns a new server with the desired configuration
+func New(configLocation string) (*Server, error) {
+	config, err := getConfig(configLocation)
+	if err != nil {
+		return nil, errors.Wrap(err, "unable to load server config")
+	}
 
-// New returns a new server
-func New() *Server {
 	return &Server{
-		Store:     store.NewSqlStore(Config.DriverName, Config.DataSource),
+		Config:    config,
+		Store:     store.NewSqlStore(config.DriverName, config.DataSource),
 		Router:    mux.NewRouter(),
 		StartTime: time.Now(),
-	}
+	}, nil
 }
 
 // Start starts a server
 func (s *Server) Start() {
+	s.SetupLogging()
 	mlog.Info("Starting Mattermod")
 
 	rand.Seed(time.Now().Unix())
@@ -72,10 +77,10 @@ func (s *Server) Start() {
 
 	var handler http.Handler = s.Router
 	go func() {
-		mlog.Info("Listening on", mlog.String("address", Config.ListenAddress))
-		err := manners.ListenAndServe(Config.ListenAddress, handler)
+		mlog.Info("Listening on", mlog.String("address", s.Config.ListenAddress))
+		err := manners.ListenAndServe(s.Config.ListenAddress, handler)
 		if err != nil {
-			logErrorToMattermost(err.Error())
+			s.logErrorToMattermost(err.Error())
 			mlog.Critical("server_error", mlog.Err(err))
 			panic(err.Error())
 		}
@@ -92,14 +97,14 @@ func (s *Server) Stop() {
 func (s *Server) Tick() {
 	mlog.Info("tick")
 
-	abortTick := CheckLimitRateAndAbortRequest()
+	abortTick := s.CheckLimitRateAndAbortRequest()
 	if abortTick {
 		return
 	}
 
-	client := NewGithubClient()
+	client := NewGithubClient(s.Config.GithubAccessToken)
 
-	for _, repository := range Config.Repositories {
+	for _, repository := range s.Config.Repositories {
 		ghPullRequests, _, err := client.PullRequests.List(context.Background(), repository.Owner, repository.Name, &github.PullRequestListOptions{
 			State: "open",
 		})
@@ -110,7 +115,7 @@ func (s *Server) Tick() {
 		}
 
 		for _, ghPullRequest := range ghPullRequests {
-			pullRequest, errPR := GetPullRequestFromGithub(ghPullRequest)
+			pullRequest, errPR := s.GetPullRequestFromGithub(ghPullRequest)
 			if errPR != nil {
 				mlog.Error("failed to convert PR", mlog.Int("pr", *ghPullRequest.Number), mlog.Err(errPR))
 				continue
@@ -134,7 +139,7 @@ func (s *Server) Tick() {
 				continue
 			}
 
-			issue, err := GetIssueFromGithub(repository.Owner, repository.Name, ghIssue)
+			issue, err := s.GetIssueFromGithub(repository.Owner, repository.Name, ghIssue)
 			if err != nil {
 				mlog.Error("failed to convert issue", mlog.Int("issue", *ghIssue.Number), mlog.Err(err))
 				continue
@@ -161,7 +166,7 @@ func (s *Server) ping(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) githubEvent(w http.ResponseWriter, r *http.Request) {
-	overLimit := CheckLimitRateAndAbortRequest()
+	overLimit := s.CheckLimitRateAndAbortRequest()
 	if overLimit {
 		return
 	}
@@ -178,10 +183,10 @@ func (s *Server) githubEvent(w http.ResponseWriter, r *http.Request) {
 
 	if eventIssueComment != nil && eventIssueComment.Action == "created" {
 		if strings.Contains(strings.TrimSpace(*eventIssueComment.Comment.Body), "/check-cla") {
-			handleCheckCLA(*eventIssueComment)
+			s.handleCheckCLA(*eventIssueComment)
 		}
 		if strings.Contains(strings.TrimSpace(*eventIssueComment.Comment.Body), "/cherry-pick") {
-			handleCherryPick(*eventIssueComment)
+			s.handleCherryPick(*eventIssueComment)
 		}
 		return
 	}
@@ -253,7 +258,7 @@ func (s *Server) deleteTestServer(w http.ResponseWriter, r *http.Request) {
 	instance := r.FormValue("instance")
 	token := r.FormValue("token")
 
-	if token != Config.TokenToDeleteTestServers {
+	if token != s.Config.TokenToDeleteTestServers {
 		mlog.Error("Error deleting test server - invalid token")
 		w.WriteHeader(http.StatusBadRequest)
 		return
@@ -302,15 +307,15 @@ func GetLogFileLocation(fileLocation string) string {
 	return filepath.Join(fileLocation, LOG_FILENAME)
 }
 
-func SetupLogging() {
+func (s *Server) SetupLogging() {
 	loggingConfig := &mlog.LoggerConfiguration{
-		EnableConsole: Config.LogSettings.EnableConsole,
-		ConsoleJson:   Config.LogSettings.ConsoleJson,
-		ConsoleLevel:  strings.ToLower(Config.LogSettings.ConsoleLevel),
-		EnableFile:    Config.LogSettings.EnableFile,
-		FileJson:      Config.LogSettings.FileJson,
-		FileLevel:     strings.ToLower(Config.LogSettings.FileLevel),
-		FileLocation:  GetLogFileLocation(Config.LogSettings.FileLocation),
+		EnableConsole: s.Config.LogSettings.EnableConsole,
+		ConsoleJson:   s.Config.LogSettings.ConsoleJson,
+		ConsoleLevel:  strings.ToLower(s.Config.LogSettings.ConsoleLevel),
+		EnableFile:    s.Config.LogSettings.EnableFile,
+		FileJson:      s.Config.LogSettings.FileJson,
+		FileLevel:     strings.ToLower(s.Config.LogSettings.FileLevel),
+		FileLocation:  GetLogFileLocation(s.Config.LogSettings.FileLocation),
 	}
 
 	logger := mlog.NewLogger(loggingConfig)
