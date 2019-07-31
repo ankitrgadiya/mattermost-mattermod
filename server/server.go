@@ -28,7 +28,7 @@ import (
 )
 
 type Server struct {
-	Config *PRServerConfig
+	Config *ServerConfig
 	Store  store.Store
 	Router *mux.Router
 

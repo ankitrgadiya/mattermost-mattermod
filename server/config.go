@@ -35,7 +35,7 @@ type JenkinsCredentials struct {
 	ApiToken string
 }
 
-type PRServerConfig struct {
+type ServerConfig struct {
 	ListenAddress               string
 	GithubAccessToken           string
 	GitHubTokenReserve          int
@@ -136,8 +136,8 @@ func findConfigFile(fileName string) string {
 	return fileName
 }
 
-func getConfig(fileName string) (*PRServerConfig, error) {
-	config := &PRServerConfig{}
+func getConfig(fileName string) (*ServerConfig, error) {
+	config := &ServerConfig{}
 	fileName = findConfigFile(fileName)
 	mlog.Info("Loading config", mlog.String("filename", fileName))
 
