@@ -13,7 +13,7 @@ import (
 	"github.com/mattermost/mattermost-server/mlog"
 )
 
-func handleIssueEvent(event *PullRequestEvent) {
+func (s *Server) handleIssueEvent(event *PullRequestEvent) {
 	mlog.Info("Handle Issue event", mlog.Any("Issue HTMLURL", *event.Issue))
 	parts := strings.Split(*event.Issue.HTMLURL, "/")
 
@@ -24,16 +24,16 @@ func handleIssueEvent(event *PullRequestEvent) {
 		return
 	}
 
-	checkIssueForChanges(issue)
+	s.checkIssueForChanges(issue)
 }
 
-func checkIssueForChanges(issue *model.Issue) {
+func (s *Server) checkIssueForChanges(issue *model.Issue) {
 	var oldIssue *model.Issue
-	if result := <-Srv.Store.Issue().Get(issue.RepoOwner, issue.RepoName, issue.Number); result.Err != nil {
+	if result := <-s.Store.Issue().Get(issue.RepoOwner, issue.RepoName, issue.Number); result.Err != nil {
 		mlog.Error(result.Err.Error())
 		return
 	} else if result.Data == nil {
-		if resultSave := <-Srv.Store.Issue().Save(issue); resultSave.Err != nil {
+		if resultSave := <-s.Store.Issue().Save(issue); resultSave.Err != nil {
 			mlog.Error(resultSave.Err.Error())
 		}
 		return
@@ -67,7 +67,7 @@ func checkIssueForChanges(issue *model.Issue) {
 	if hasChanges {
 		mlog.Info("issue has changes", mlog.Int("issue", issue.Number))
 
-		if result := <-Srv.Store.Issue().Save(issue); result.Err != nil {
+		if result := <-s.Store.Issue().Save(issue); result.Err != nil {
 			mlog.Error(result.Err.Error())
 			return
 		}
@@ -96,11 +96,11 @@ func handleIssueLabeled(issue *model.Issue, addedLabel string) {
 	}
 }
 
-func CleanOutdatedIssues() {
+func (s *Server) CleanOutdatedIssues() {
 	mlog.Info("Cleaning outdated issues in the mattermod database....")
 
 	var issues []*model.Issue
-	if result := <-Srv.Store.Issue().ListOpen(); result.Err != nil {
+	if result := <-s.Store.Issue().ListOpen(); result.Err != nil {
 		mlog.Error(result.Err.Error())
 		return
 	} else {
@@ -123,7 +123,7 @@ func CleanOutdatedIssues() {
 		if *ghIssue.State == "closed" {
 			mlog.Info("Issue is closed, updating the status in the database", mlog.String("RepoOwner", issue.RepoOwner), mlog.String("RepoName", issue.RepoName), mlog.Int("IssueNumber", issue.Number))
 			issue.State = *ghIssue.State
-			if result := <-Srv.Store.Issue().Save(issue); result.Err != nil {
+			if result := <-s.Store.Issue().Save(issue); result.Err != nil {
 				mlog.Error(result.Err.Error())
 			}
 		} else {

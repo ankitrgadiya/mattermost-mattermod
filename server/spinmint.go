@@ -115,7 +115,7 @@ func waitForBuildAndSetupLoadtest(pr *model.PullRequest) {
 	return
 }
 
-func waitForBuildAndSetupSpinmint(pr *model.PullRequest, upgradeServer bool) {
+func (s *Server) waitForBuildAndSetupSpinmint(pr *model.PullRequest, upgradeServer bool) {
 	repo, client, err := buildJenkinsClient(pr)
 	if err != nil {
 		mlog.Error("Error building Jenkins client", mlog.Err(err))
@@ -128,7 +128,7 @@ func waitForBuildAndSetupSpinmint(pr *model.PullRequest, upgradeServer bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 	defer cancel()
 
-	pr, err = waitForBuild(ctx, client, pr)
+	pr, err = s.waitForBuild(ctx, client, pr)
 	if err != nil {
 		mlog.Error("Error waiting for PR build to finish", mlog.Err(err))
 		commentOnIssue(pr.RepoOwner, pr.RepoName, pr.Number, Config.SetupSpinmintFailedMessage)
@@ -136,7 +136,7 @@ func waitForBuildAndSetupSpinmint(pr *model.PullRequest, upgradeServer bool) {
 	}
 
 	var instance *ec2.Instance
-	if result := <-Srv.Store.Spinmint().Get(pr.Number, pr.RepoName); result.Err != nil {
+	if result := <-s.Store.Spinmint().Get(pr.Number, pr.RepoName); result.Err != nil {
 		mlog.Error("Unable to get the spinmint information. Will not build the spinmint", mlog.String("pr_error", result.Err.Error()))
 	} else if result.Data == nil {
 		mlog.Error("No spinmint for this PR in the Database. will start a fresh one.")
@@ -154,7 +154,7 @@ func waitForBuildAndSetupSpinmint(pr *model.PullRequest, upgradeServer bool) {
 			Number:     pr.Number,
 			CreatedAt:  time.Now().UTC().Unix(),
 		}
-		storeSpinmintInfo(spinmint)
+		s.storeSpinmintInfo(spinmint)
 	} else {
 		spinmint := result.Data.(*model.Spinmint)
 		instance.InstanceId = aws.String(spinmint.InstanceId)
@@ -191,7 +191,7 @@ func waitForBuildAndSetupSpinmint(pr *model.PullRequest, upgradeServer bool) {
 	commentOnIssue(pr.RepoOwner, pr.RepoName, pr.Number, message)
 }
 
-func waitForMobileAppsBuild(pr *model.PullRequest) {
+func (s *Server) waitForMobileAppsBuild(pr *model.PullRequest) {
 	repo, client, err := buildJenkinsClient(pr)
 	if err != nil {
 		mlog.Error("Error building Jenkins client", mlog.Err(err))
@@ -204,7 +204,7 @@ func waitForMobileAppsBuild(pr *model.PullRequest) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 	defer cancel()
 
-	pr, err = waitForBuild(ctx, client, pr)
+	pr, err = s.waitForBuild(ctx, client, pr)
 	if err != nil {
 		mlog.Error("Error waiting for PR build to finish", mlog.Err(err))
 		commentOnIssue(pr.RepoOwner, pr.RepoName, pr.Number, Config.SetupSpinmintFailedMessage)
@@ -332,7 +332,7 @@ func setupSpinmint(pr *model.PullRequest, repo *Repository, upgrade bool) (*ec2.
 	return resp.Instances[0], nil
 }
 
-func destroySpinmint(pr *model.PullRequest, instanceID string) {
+func (s *Server) destroySpinmint(pr *model.PullRequest, instanceID string) {
 	mlog.Info("Destroying spinmint for PR", mlog.String("instance", instanceID), mlog.Int("pr", pr.Number), mlog.String("repo_owner", pr.RepoOwner), mlog.String("repo_name", pr.RepoName))
 
 	svc := ec2.New(session.New(), Config.GetAwsConfig())
@@ -356,8 +356,7 @@ func destroySpinmint(pr *model.PullRequest, instanceID string) {
 		return
 	}
 
-	// Remove from the local db
-	removeTestServerFromDB(instanceID)
+	s.removeTestServerFromDB(instanceID)
 }
 
 func getIPsForInstance(instance string) (publicIP string, privateIP string) {
@@ -414,10 +413,10 @@ func updateRoute53Subdomain(name, target, action string) error {
 	return nil
 }
 
-func CheckSpinmintLifeTime() {
+func (s *Server) CheckSpinmintLifeTime() {
 	mlog.Info("Checking Spinmint lifetime...")
 	spinmints := []*model.Spinmint{}
-	if result := <-Srv.Store.Spinmint().List(); result.Err != nil {
+	if result := <-s.Store.Spinmint().List(); result.Err != nil {
 		mlog.Error("Unable to get updated PR while waiting for spinmint", mlog.String("spinmint_error", result.Err.Error()))
 	} else {
 		spinmints = result.Data.([]*model.Spinmint)
@@ -434,8 +433,8 @@ func CheckSpinmintLifeTime() {
 				RepoName:  spinmint.RepoName,
 				Number:    spinmint.Number,
 			}
-			go destroySpinmint(pr, spinmint.InstanceId)
-			removeTestServerFromDB(spinmint.InstanceId)
+			go s.destroySpinmint(pr, spinmint.InstanceId)
+			s.removeTestServerFromDB(spinmint.InstanceId)
 			commentOnIssue(spinmint.RepoOwner, spinmint.RepoName, spinmint.Number, Config.DestroyedExpirationSpinmintMessage)
 		}
 	}
@@ -443,14 +442,14 @@ func CheckSpinmintLifeTime() {
 	mlog.Info("Done checking Spinmint lifetime.")
 }
 
-func storeSpinmintInfo(spinmint *model.Spinmint) {
-	if result := <-Srv.Store.Spinmint().Save(spinmint); result.Err != nil {
+func (s *Server) storeSpinmintInfo(spinmint *model.Spinmint) {
+	if result := <-s.Store.Spinmint().Save(spinmint); result.Err != nil {
 		mlog.Error(result.Err.Error())
 	}
 }
 
-func removeTestServerFromDB(instanceId string) {
-	if result := <-Srv.Store.Spinmint().Delete(instanceId); result.Err != nil {
+func (s *Server) removeTestServerFromDB(instanceId string) {
+	if result := <-s.Store.Spinmint().Delete(instanceId); result.Err != nil {
 		mlog.Error(result.Err.Error())
 	}
 }

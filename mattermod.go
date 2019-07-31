@@ -19,23 +19,23 @@ func main() {
 	flag.Parse()
 
 	server.LoadConfig(flagConfigFile)
-	server.Start()
+	s := server.New()
+	s.Start()
+	defer s.Stop()
 
 	//server.CleanOutdatedPRs()
 	//server.CleanOutdatedIssues()
 
 	c := cron.New()
-	c.AddFunc("@daily", server.CheckPRActivity)
-	c.AddFunc("@midnight", server.CleanOutdatedPRs)
-	c.AddFunc("@every 2h", server.CheckSpinmintLifeTime)
+	c.AddFunc("@daily", s.CheckPRActivity)
+	c.AddFunc("@midnight", s.CleanOutdatedPRs)
+	c.AddFunc("@every 2h", s.CheckSpinmintLifeTime)
 
 	cronTicker := fmt.Sprintf("@every %dm", server.Config.TickRateMinutes)
-	c.AddFunc(cronTicker, server.Tick)
+	c.AddFunc(cronTicker, s.Tick)
 
 	c.Start()
 	sig := make(chan os.Signal)
 	signal.Notify(sig, os.Interrupt, os.Kill)
 	<-sig
-
-	server.Stop()
 }

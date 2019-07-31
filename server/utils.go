@@ -31,13 +31,13 @@ func buildJenkinsClient(pr *model.PullRequest) (*Repository, *jenkins.Jenkins, e
 	return repo, client, nil
 }
 
-func waitForBuild(ctx context.Context, client *jenkins.Jenkins, pr *model.PullRequest) (*model.PullRequest, error) {
+func (s *Server) waitForBuild(ctx context.Context, client *jenkins.Jenkins, pr *model.PullRequest) (*model.PullRequest, error) {
 	for {
 		select {
 		case <-ctx.Done():
 			return pr, errors.New("timed out waiting for build to finish")
 		case <-time.After(30 * time.Second):
-			result := <-Srv.Store.PullRequest().Get(pr.RepoOwner, pr.RepoName, pr.Number)
+			result := <-s.Store.PullRequest().Get(pr.RepoOwner, pr.RepoName, pr.Number)
 			if result.Err != nil {
 				return pr, errors.Wrap(result.Err, "unable to get updated PR from Mattermod database")
 			}
@@ -45,7 +45,7 @@ func waitForBuild(ctx context.Context, client *jenkins.Jenkins, pr *model.PullRe
 			// Update the PR in case the build link has changed because of a new commit
 			pr = result.Data.(*model.PullRequest)
 			var err error
-			pr, err = GetUpdateChecks(pr.RepoOwner, pr.RepoName, pr.Number)
+			pr, err = s.GetUpdateChecks(pr.RepoOwner, pr.RepoName, pr.Number)
 			if err != nil {
 				return pr, errors.Wrap(err, "unable to get updated PR from GitHub")
 			}

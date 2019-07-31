@@ -77,8 +77,8 @@ type Installation struct {
 	LockAcquiredAt int64
 }
 
-func handleCreateSpinWick(pr *model.PullRequest, size string) {
-	installationID, sendMattermostLog, err := createSpinWick(pr, size)
+func (s *Server) handleCreateSpinWick(pr *model.PullRequest, size string) {
+	installationID, sendMattermostLog, err := s.createSpinWick(pr, size)
 	if err != nil {
 		mlog.Error("Failed to create SpinWick", mlog.Err(err), mlog.String("repo_name", pr.RepoName), mlog.Int("pr", pr.Number), mlog.String("installation_id", installationID))
 		commentOnIssue(pr.RepoOwner, pr.RepoName, pr.Number, Config.SetupSpinmintFailedMessage)
@@ -93,7 +93,7 @@ func handleCreateSpinWick(pr *model.PullRequest, size string) {
 	}
 
 	if installationID != "" {
-		storeSpinmintInfo(&model.Spinmint{
+		s.storeSpinmintInfo(&model.Spinmint{
 			InstanceId: installationID,
 			RepoOwner:  pr.RepoOwner,
 			RepoName:   pr.RepoName,
@@ -105,10 +105,10 @@ func handleCreateSpinWick(pr *model.PullRequest, size string) {
 
 // createSpinWick creates a SpinWick and returns an error as well as a bool
 // indicating if the error should be logged to Mattermost.
-func createSpinWick(pr *model.PullRequest, size string) (string, bool, error) {
+func (s *Server) createSpinWick(pr *model.PullRequest, size string) (string, bool, error) {
 	installationID := "n/a"
 
-	result := <-Srv.Store.Spinmint().Get(pr.Number, pr.RepoName)
+	result := <-s.Store.Spinmint().Get(pr.Number, pr.RepoName)
 	if result.Err != nil {
 		return installationID, true, errors.Wrap(result.Err, "unable to get the SpinWick information from database")
 	}
@@ -129,7 +129,7 @@ func createSpinWick(pr *model.PullRequest, size string) (string, bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 	defer cancel()
 
-	pr, err = waitForBuild(ctx, client, pr)
+	pr, err = s.waitForBuild(ctx, client, pr)
 	if err != nil {
 		return installationID, false, errors.Wrap(err, "error waiting for PR build to finish")
 	}
@@ -138,7 +138,7 @@ func createSpinWick(pr *model.PullRequest, size string) (string, bool, error) {
 	// a SpinWick while we waited for the build to finish.
 	//
 	// TODO: this should be improved in the future.
-	result = <-Srv.Store.Spinmint().Get(pr.Number, pr.RepoName)
+	result = <-s.Store.Spinmint().Get(pr.Number, pr.RepoName)
 	if result.Err != nil {
 		return installationID, true, errors.Wrap(result.Err, "unable to get the SpinWick information from database")
 	}
@@ -214,8 +214,8 @@ func createSpinWick(pr *model.PullRequest, size string) (string, bool, error) {
 	return installationID, false, nil
 }
 
-func handleUpdateSpinWick(pr *model.PullRequest) {
-	installationID, sendMattermostLog, err := updateSpinWick(pr)
+func (s *Server) handleUpdateSpinWick(pr *model.PullRequest) {
+	installationID, sendMattermostLog, err := s.updateSpinWick(pr)
 	if err != nil {
 		mlog.Error("Error trying to update SpinWick", mlog.Err(err), mlog.String("repo_name", pr.RepoName), mlog.Int("pr", pr.Number), mlog.String("installation_id", installationID))
 		commentOnIssue(pr.RepoOwner, pr.RepoName, pr.Number, Config.SetupSpinmintFailedMessage)
@@ -230,7 +230,7 @@ func handleUpdateSpinWick(pr *model.PullRequest) {
 
 // udpateSpinWick updates a SpinWick and returns an error as well as a bool
 // indicating if the error should be logged to Mattermost.
-func updateSpinWick(pr *model.PullRequest) (string, bool, error) {
+func (s *Server) updateSpinWick(pr *model.PullRequest) (string, bool, error) {
 	installationID := "n/a"
 	foundLabel := false
 	for _, label := range pr.Labels {
@@ -245,7 +245,7 @@ func updateSpinWick(pr *model.PullRequest) (string, bool, error) {
 		return installationID, false, nil
 	}
 
-	result := <-Srv.Store.Spinmint().Get(pr.Number, pr.RepoName)
+	result := <-s.Store.Spinmint().Get(pr.Number, pr.RepoName)
 	if result.Err != nil {
 		return installationID, true, errors.Wrap(result.Err, "unable to get SpinWick information from the database")
 	}
@@ -272,7 +272,7 @@ func updateSpinWick(pr *model.PullRequest) (string, bool, error) {
 	}
 	mlog.Info("Build Link updated", mlog.String("buildLink", buildLink), mlog.String("OldBuildLink", pr.BuildLink))
 	pr.BuildLink = buildLink
-	result = <-Srv.Store.PullRequest().Save(pr)
+	result = <-s.Store.PullRequest().Save(pr)
 	if result.Err != nil {
 		return installationID, true, errors.Wrap(result.Err, "unable to save updated PR to the database")
 	}
@@ -289,7 +289,7 @@ func updateSpinWick(pr *model.PullRequest) (string, bool, error) {
 	ctx, cancel = context.WithTimeout(context.Background(), 45*time.Minute)
 	defer cancel()
 
-	pr, err = waitForBuild(ctx, client, pr)
+	pr, err = s.waitForBuild(ctx, client, pr)
 	if err != nil {
 		return installationID, false, errors.Wrap(err, "error waiting for PR build to finish")
 	}
@@ -322,7 +322,7 @@ func updateSpinWick(pr *model.PullRequest) (string, bool, error) {
 	return installationID, false, nil
 }
 
-func handleDestroySpinWick(pr *model.PullRequest, installationID string) {
+func (s *Server) handleDestroySpinWick(pr *model.PullRequest, installationID string) {
 	mlog.Info("Destroying SpinWick", mlog.Int("pr", pr.Number), mlog.String("repo_owner", pr.RepoOwner), mlog.String("repo_name", pr.RepoName), mlog.String("installation_id", installationID))
 
 	sendMattermostLog, err := destroyMMInstallation(installationID)
@@ -336,7 +336,7 @@ func handleDestroySpinWick(pr *model.PullRequest, installationID string) {
 		}
 	}
 
-	removeTestServerFromDB(installationID)
+	s.removeTestServerFromDB(installationID)
 }
 
 // destroyMMInstallation destroys a SpinWick and returns an error as well as a bool

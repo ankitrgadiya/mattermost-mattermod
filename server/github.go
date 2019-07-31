@@ -108,7 +108,7 @@ func commentOnIssue(repoOwner, repoName string, number int, comment string) {
 	mlog.Info("Finished commenting")
 }
 
-func GetUpdateChecks(owner, repoName string, prNumber int) (*model.PullRequest, error) {
+func (s *Server) GetUpdateChecks(owner, repoName string, prNumber int) (*model.PullRequest, error) {
 	client := NewGithubClient()
 	prGitHub, _, err := client.PullRequests.Get(context.Background(), owner, repoName, prNumber)
 	pr, err := GetPullRequestFromGithub(prGitHub)
@@ -117,7 +117,7 @@ func GetUpdateChecks(owner, repoName string, prNumber int) (*model.PullRequest, 
 		return nil, err
 	}
 
-	if result := <-Srv.Store.PullRequest().Save(pr); result.Err != nil {
+	if result := <-s.Store.PullRequest().Save(pr); result.Err != nil {
 		mlog.Error(result.Err.Error())
 	}
 

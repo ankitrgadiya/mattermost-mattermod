@@ -29,6 +29,10 @@ import (
 type Server struct {
 	Store  store.Store
 	Router *mux.Router
+
+	spinwickLocks map[string]sync.Mutex
+
+	StartTime time.Time
 }
 
 const (
@@ -37,33 +41,36 @@ const (
 )
 
 var (
-	Srv *Server
-
 	commentLock sync.Mutex
 
 	INSTANCE_ID_PATTERN = regexp.MustCompile(INSTANCE_ID_MESSAGE + "(i-[a-z0-9]+)")
 	INSTANCE_ID         = "INSTANCE_ID"
 	INTERNAL_IP         = "INTERNAL_IP"
 	SPINMINT_LINK       = "SPINMINT_LINK"
-
-	startTime time.Time
 )
 
-func Start() {
+func init() {
 	SetupLogging()
-	mlog.Info("Starting pr manager")
-	startTime = time.Now()
+}
+
+// New returns a new server
+func New() *Server {
+	return &Server{
+		Store:     store.NewSqlStore(Config.DriverName, Config.DataSource),
+		Router:    mux.NewRouter(),
+		StartTime: time.Now(),
+	}
+}
+
+// Start starts a server
+func (s *Server) Start() {
+	mlog.Info("Starting Mattermod")
 
 	rand.Seed(time.Now().Unix())
 
-	Srv = &Server{
-		Store:  store.NewSqlStore(Config.DriverName, Config.DataSource),
-		Router: mux.NewRouter(),
-	}
+	s.initializeRouter()
 
-	addApis(Srv.Router)
-
-	var handler http.Handler = Srv.Router
+	var handler http.Handler = s.Router
 	go func() {
 		mlog.Info("Listening on", mlog.String("address", Config.ListenAddress))
 		err := manners.ListenAndServe(Config.ListenAddress, handler)
@@ -75,7 +82,14 @@ func Start() {
 	}()
 }
 
-func Tick() {
+// Stop stops a server
+func (s *Server) Stop() {
+	mlog.Info("Stopping Mattermod")
+	manners.Close()
+}
+
+// Tick runs a check on objects in the database
+func (s *Server) Tick() {
 	mlog.Info("tick")
 
 	abortTick := CheckLimitRateAndAbortRequest()
@@ -102,7 +116,7 @@ func Tick() {
 				continue
 			}
 
-			checkPullRequestForChanges(pullRequest)
+			s.checkPullRequestForChanges(pullRequest)
 		}
 
 		issues, _, err := client.Issues.ListByRepo(context.Background(), repository.Owner, repository.Name, &github.IssueListByRepoOptions{
@@ -126,54 +140,148 @@ func Tick() {
 				continue
 			}
 
-			checkIssueForChanges(issue)
+			s.checkIssueForChanges(issue)
 		}
 	}
 }
 
-func Stop() {
-	mlog.Info("Stopping pr manager")
-	manners.Close()
+func (s *Server) initializeRouter() {
+	s.Router.HandleFunc("/", s.ping).Methods("GET")
+	s.Router.HandleFunc("/pr_event", s.githubEvent).Methods("POST")
+	s.Router.HandleFunc("/list_prs", s.listPrs).Methods("GET")
+	s.Router.HandleFunc("/list_issues", s.listIssues).Methods("GET")
+	s.Router.HandleFunc("/list_spinmints", s.listTestServers).Methods("GET")
+	s.Router.HandleFunc("/delete_test_server", s.deleteTestServer).Methods("DELETE")
 }
 
-func addApis(r *mux.Router) {
-	r.HandleFunc("/", ping).Methods("GET")
-	r.HandleFunc("/pr_event", prEvent).Methods("POST")
-	r.HandleFunc("/list_prs", listPrs).Methods("GET")
-	r.HandleFunc("/list_issues", listIssues).Methods("GET")
-	r.HandleFunc("/list_spinmints", listSpinmints).Methods("GET")
-	r.HandleFunc("/delete_test_server", deleteTestServer).Methods("DELETE")
-}
-
-func ping(w http.ResponseWriter, r *http.Request) {
-	msg := fmt.Sprintf("{\"uptime\": \"%v\"}", time.Since(startTime))
+func (s *Server) ping(w http.ResponseWriter, r *http.Request) {
+	msg := fmt.Sprintf("{\"uptime\": \"%v\"}", time.Since(s.StartTime))
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(msg))
 }
 
-func prEvent(w http.ResponseWriter, r *http.Request) {
+func (s *Server) githubEvent(w http.ResponseWriter, r *http.Request) {
+	overLimit := CheckLimitRateAndAbortRequest()
+	if overLimit {
+		return
+	}
+
 	buf, _ := ioutil.ReadAll(r.Body)
 	event := PullRequestEventFromJson(ioutil.NopCloser(bytes.NewBuffer(buf)))
 	eventIssueComment := IssueCommentFromJson(ioutil.NopCloser(bytes.NewBuffer(buf)))
 
-	abortTick := CheckLimitRateAndAbortRequest()
-	if abortTick {
+	if event.PRNumber != 0 {
+		mlog.Info("pr event", mlog.Int("pr", event.PRNumber), mlog.String("action", event.Action))
+		s.handlePullRequestEvent(event)
 		return
 	}
 
-	if event.PRNumber != 0 {
-		mlog.Info("pr event", mlog.Int("pr", event.PRNumber), mlog.String("action", event.Action))
-		handlePullRequestEvent(event)
-	} else if eventIssueComment != nil && eventIssueComment.Action == "created" {
+	if eventIssueComment != nil && eventIssueComment.Action == "created" {
 		if strings.Contains(strings.TrimSpace(*eventIssueComment.Comment.Body), "/check-cla") {
 			handleCheckCLA(*eventIssueComment)
 		}
 		if strings.Contains(strings.TrimSpace(*eventIssueComment.Comment.Body), "/cherry-pick") {
 			handleCherryPick(*eventIssueComment)
 		}
-	} else {
-		handleIssueEvent(event)
+		return
 	}
+
+	s.handleIssueEvent(event)
+}
+
+func (s *Server) listPrs(w http.ResponseWriter, r *http.Request) {
+	result := <-s.Store.PullRequest().List()
+	if result.Err != nil {
+		mlog.Error("Error getting list of pull requests", mlog.Err(result.Err))
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	prs := result.Data.([]*model.PullRequest)
+
+	b, err := json.Marshal(prs)
+	if err != nil {
+		mlog.Error("Error marshalling pull requests", mlog.Err(err))
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(b)
+}
+
+func (s *Server) listIssues(w http.ResponseWriter, r *http.Request) {
+	result := <-s.Store.Issue().List()
+	if result.Err != nil {
+		mlog.Error("Error getting list of github issues", mlog.Err(result.Err))
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	issues := result.Data.([]*model.Issue)
+
+	b, err := json.Marshal(issues)
+	if err != nil {
+		mlog.Error("Error marshalling github issues", mlog.Err(err))
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(b)
+}
+
+func (s *Server) listTestServers(w http.ResponseWriter, r *http.Request) {
+	result := <-s.Store.Spinmint().List()
+	if result.Err != nil {
+		mlog.Error("Error getting list of test servers", mlog.Err(result.Err))
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	spinmints := result.Data.([]*model.Spinmint)
+
+	b, err := json.Marshal(spinmints)
+	if err != nil {
+		mlog.Error("spinmint_error", mlog.Err(err))
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(b)
+}
+
+func (s *Server) deleteTestServer(w http.ResponseWriter, r *http.Request) {
+	instance := r.FormValue("instance")
+	token := r.FormValue("token")
+
+	if token != Config.TokenToDeleteTestServers {
+		mlog.Error("Error deleting test server - invalid token")
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	result := <-s.Store.Spinmint().GetTestServer(instance)
+	if result.Err != nil {
+		mlog.Error("Error deleting test server", mlog.Err(result.Err))
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	testServer := result.Data.(*model.Spinmint)
+
+	result = <-s.Store.PullRequest().Get(testServer.RepoOwner, testServer.RepoName, testServer.Number)
+	if result.Err != nil {
+		mlog.Error("Error deleting test server", mlog.Err(result.Err))
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	pr := result.Data.(*model.PullRequest)
+
+	if strings.Contains(testServer.InstanceId, "i-") {
+		s.destroySpinmint(pr, testServer.InstanceId)
+	} else {
+		s.handleDestroySpinWick(pr, testServer.InstanceId)
+	}
+
+	w.WriteHeader(http.StatusOK)
 }
 
 func messageByUserContains(comments []*github.IssueComment, username string, text string) bool {
@@ -184,98 +292,6 @@ func messageByUserContains(comments []*github.IssueComment, username string, tex
 	}
 
 	return false
-}
-
-func listPrs(w http.ResponseWriter, r *http.Request) {
-	var prs []*model.PullRequest
-	if result := <-Srv.Store.PullRequest().List(); result.Err != nil {
-		mlog.Error(result.Err.Error())
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	} else {
-		prs = result.Data.([]*model.PullRequest)
-	}
-
-	if b, err := json.Marshal(prs); err != nil {
-		mlog.Error("pr_error", mlog.Err(err))
-		w.WriteHeader(http.StatusInternalServerError)
-	} else {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(b)
-	}
-}
-
-func listIssues(w http.ResponseWriter, r *http.Request) {
-	var issues []*model.Issue
-	if result := <-Srv.Store.Issue().List(); result.Err != nil {
-		mlog.Error(result.Err.Error())
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	} else {
-		issues = result.Data.([]*model.Issue)
-	}
-
-	if b, err := json.Marshal(issues); err != nil {
-		mlog.Error("issue_error", mlog.Err(err))
-		w.WriteHeader(http.StatusInternalServerError)
-	} else {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(b)
-	}
-}
-
-func listSpinmints(w http.ResponseWriter, r *http.Request) {
-	var spinmints []*model.Spinmint
-	if result := <-Srv.Store.Spinmint().List(); result.Err != nil {
-		mlog.Error(result.Err.Error())
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	} else {
-		spinmints = result.Data.([]*model.Spinmint)
-	}
-
-	if b, err := json.Marshal(spinmints); err != nil {
-		mlog.Error("spinmint_error", mlog.Err(err))
-		w.WriteHeader(http.StatusInternalServerError)
-	} else {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(b)
-	}
-}
-
-func deleteTestServer(w http.ResponseWriter, r *http.Request) {
-	instance := r.FormValue("instance")
-	token := r.FormValue("token")
-
-	if strings.Compare(token, Config.TokenToDeleteTestServers) != 0 {
-		mlog.Error("Invalid Token")
-		w.WriteHeader(http.StatusBadRequest)
-	}
-
-	var testServer *model.Spinmint
-	if result := <-Srv.Store.Spinmint().GetTestServer(instance); result.Err != nil {
-		mlog.Error(result.Err.Error())
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	} else {
-		testServer = result.Data.(*model.Spinmint)
-	}
-
-	var pr *model.PullRequest
-	result := <-Srv.Store.PullRequest().Get(testServer.RepoOwner, testServer.RepoName, testServer.Number)
-	if result.Err != nil {
-		mlog.Error("delete test server error ", mlog.Err(result.Err))
-		w.WriteHeader(http.StatusInternalServerError)
-	}
-	// Update the PR in case the build link has changed because of a new commit
-	pr = result.Data.(*model.PullRequest)
-	if strings.Contains(testServer.InstanceId, "i-") {
-		destroySpinmint(pr, testServer.InstanceId)
-	} else {
-		handleDestroySpinWick(pr, testServer.InstanceId)
-	}
-
-	w.WriteHeader(http.StatusOK)
 }
 
 func GetLogFileLocation(fileLocation string) string {
