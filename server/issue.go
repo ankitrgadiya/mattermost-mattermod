@@ -78,8 +78,8 @@ func (s *Server) handleIssueLabeled(issue *model.Issue, addedLabel string) {
 	client := NewGithubClient(s.Config.GithubAccessToken)
 
 	// Must be sure the comment is created before we let anouther request test
-	commentLock.Lock()
-	defer commentLock.Unlock()
+	s.commentLock.Lock()
+	defer s.commentLock.Unlock()
 
 	comments, _, err := client.Issues.ListComments(context.Background(), issue.RepoOwner, issue.RepoName, issue.Number, nil)
 	if err != nil {

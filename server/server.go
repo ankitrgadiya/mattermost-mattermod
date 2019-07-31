@@ -32,7 +32,7 @@ type Server struct {
 	Store  store.Store
 	Router *mux.Router
 
-	spinwickLocks map[string]sync.Mutex
+	commentLock sync.Mutex
 
 	StartTime time.Time
 }
@@ -43,8 +43,6 @@ const (
 )
 
 var (
-	commentLock sync.Mutex
-
 	INSTANCE_ID_PATTERN = regexp.MustCompile(INSTANCE_ID_MESSAGE + "(i-[a-z0-9]+)")
 	INSTANCE_ID         = "INSTANCE_ID"
 	INTERNAL_IP         = "INTERNAL_IP"
@@ -97,8 +95,8 @@ func (s *Server) Stop() {
 func (s *Server) Tick() {
 	mlog.Info("tick")
 
-	abortTick := s.CheckLimitRateAndAbortRequest()
-	if abortTick {
+	aboveLimit := s.CheckLimitRateAndAbortRequest()
+	if aboveLimit {
 		return
 	}
 
@@ -109,8 +107,7 @@ func (s *Server) Tick() {
 			State: "open",
 		})
 		if err != nil {
-			mlog.Error("failed to get PRs", mlog.String("repo_owner", repository.Owner), mlog.String("repo_name", repository.Name))
-			mlog.Error("pr_error", mlog.Err(err))
+			mlog.Error("Failed to get PRs", mlog.Err(err), mlog.String("repo_owner", repository.Owner), mlog.String("repo_name", repository.Name))
 			continue
 		}
 
@@ -128,8 +125,7 @@ func (s *Server) Tick() {
 			State: "open",
 		})
 		if err != nil {
-			mlog.Error("failed to get issues", mlog.String("repo_owner", repository.Owner), mlog.String("repo_name", repository.Name))
-			mlog.Error("issue_error", mlog.Err(err))
+			mlog.Error("Failed to get issues", mlog.Err(err), mlog.String("repo_owner", repository.Owner), mlog.String("repo_name", repository.Name))
 			continue
 		}
 

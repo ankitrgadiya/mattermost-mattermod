@@ -146,8 +146,8 @@ func (s *Server) handlePRLabeled(pr *model.PullRequest, addedLabel string) {
 	mlog.Info("New PR label detected", mlog.Int("pr", pr.Number), mlog.String("label", addedLabel))
 
 	// Must be sure the comment is created before we let another request test
-	commentLock.Lock()
-	defer commentLock.Unlock()
+	s.commentLock.Lock()
+	defer s.commentLock.Unlock()
 
 	comments, _, err := NewGithubClient(s.Config.GithubAccessToken).Issues.ListComments(context.Background(), pr.RepoOwner, pr.RepoName, pr.Number, nil)
 	if err != nil {
@@ -213,8 +213,8 @@ func checkFileExists(filepath string) bool {
 }
 
 func (s *Server) handlePRUnlabeled(pr *model.PullRequest, removedLabel string) {
-	commentLock.Lock()
-	defer commentLock.Unlock()
+	s.commentLock.Lock()
+	defer s.commentLock.Unlock()
 
 	comments, _, err := NewGithubClient(s.Config.GithubAccessToken).Issues.ListComments(context.Background(), pr.RepoOwner, pr.RepoName, pr.Number, nil)
 	if err != nil {
