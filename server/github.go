@@ -64,7 +64,7 @@ func (s *Server) GetPullRequestFromGithub(pullRequest *github.PullRequest) (*mod
 	if labels, _, err := client.Issues.ListLabelsByIssue(context.Background(), pr.RepoOwner, pr.RepoName, pr.Number, nil); err != nil {
 		return nil, err
 	} else {
-		pr.Labels = LabelsToStringArray(labels)
+		pr.Labels = labelsToStringArray(labels)
 	}
 
 	return pr, nil
@@ -82,13 +82,13 @@ func (s *Server) GetIssueFromGithub(repoOwner, repoName string, ghIssue *github.
 	if labels, _, err := NewGithubClient(s.Config.GithubAccessToken).Issues.ListLabelsByIssue(context.Background(), issue.RepoOwner, issue.RepoName, issue.Number, nil); err != nil {
 		return nil, err
 	} else {
-		issue.Labels = LabelsToStringArray(labels)
+		issue.Labels = labelsToStringArray(labels)
 	}
 
 	return issue, nil
 }
 
-func LabelsToStringArray(labels []*github.Label) []string {
+func labelsToStringArray(labels []*github.Label) []string {
 	out := make([]string, len(labels))
 
 	for i, label := range labels {
