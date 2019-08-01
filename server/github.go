@@ -28,6 +28,7 @@ func (s *Server) GetPullRequestFromGithub(pullRequest *github.PullRequest) (*mod
 		Ref:       *pullRequest.Head.Ref,
 		Sha:       *pullRequest.Head.SHA,
 		State:     *pullRequest.State,
+		URL:       *pullRequest.URL,
 	}
 
 	client := NewGithubClient(s.Config.GithubAccessToken)

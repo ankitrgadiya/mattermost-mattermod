@@ -15,6 +15,7 @@ import (
 )
 
 func (s *Server) handlePullRequestEvent(event *PullRequestEvent) {
+	mlog.Info("PR-Event", mlog.String("repo", *event.Repo.Name), mlog.Int("pr", event.PRNumber), mlog.String("action", event.Action))
 	pr, err := s.GetPullRequestFromGithub(event.PullRequest)
 	if err != nil {
 		mlog.Error("Unable to get PR from GitHub", mlog.Int("pr", event.PRNumber), mlog.Err(err))
